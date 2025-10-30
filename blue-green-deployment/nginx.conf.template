@@ -17,7 +17,7 @@ http {
                        'client=$remote_addr';
 
     # Access log using the custom format
-    access_log /var/log/nginx/access.log detailed;
+    access_log /var/log/nginx/access_real.log detailed;
     error_log /var/log/nginx/error.log warn;
 
     # Upstream configuration for Blue/Green deployment
@@ -75,6 +75,11 @@ http {
         # Chaos endpoints (for testing)
         location /chaos/ {
             proxy_pass http://app_backend;
+        }
+
+        # Error injection endpoint for alert testing
+        location /failme {
+            return 500;
         }
 
         # Nginx status (optional, for monitoring)

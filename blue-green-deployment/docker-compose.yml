@@ -59,7 +59,8 @@ services:
     restart: unless-stopped
     command: >
       /bin/sh -c "
-      /bin/sh /docker-entrypoint.d/40-generate-config.sh &&
+      mkdir -p /var/log/nginx && \
+      /bin/sh /docker-entrypoint.d/40-generate-config.sh && \
       nginx -g 'daemon off;'
       "
 
@@ -69,13 +70,13 @@ services:
     volumes:
       - ./watcher.py:/app/watcher.py:ro
       - ./requirements.txt:/app/requirements.txt:ro
-      - nginx_logs:/var/log/nginx:ro  # Read-only access to Nginx logs
+      - nginx_logs:/var/log/nginx  # Read-only access to Nginx logs
     environment:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
       - ERROR_RATE_THRESHOLD=${ERROR_RATE_THRESHOLD:-2.0}
       - WINDOW_SIZE=${WINDOW_SIZE:-200}
       - ALERT_COOLDOWN_SEC=${ALERT_COOLDOWN_SEC:-300}
-      - NGINX_LOG_FILE=/var/log/nginx/access.log
+      - NGINX_LOG_FILE=/var/log/nginx/access_real.log
       - ACTIVE_POOL=${ACTIVE_POOL:-blue}
       - MAINTENANCE_MODE=${MAINTENANCE_MODE:-false}
     working_dir: /app

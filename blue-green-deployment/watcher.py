@@ -237,23 +237,18 @@ def main():
             current_pool = log_entry.get('pool', '-')
             status_code = int(log_entry.get('status', '0'))
             upstream_status = log_entry.get('upstream_status', '-')
-            
-            # Skip if no pool info
-            if current_pool == '-':
-                continue
-            
-            # Track status codes in sliding window
+
+            # Track status codes in sliding window for ALL requests
             request_window.append(status_code)
-            
-            # Check for failover
-            check_failover(current_pool, log_entry)
-            
-            # Check for high error rate
+
+            # Only check failover/recovery if pool info is present
+            if current_pool != '-':
+                check_failover(current_pool, log_entry)
+                check_recovery(current_pool, initial_pool)
+
+            # Check for high error rate (always)
             check_error_rate()
-            
-            # Check for recovery
-            check_recovery(current_pool, initial_pool)
-            
+
             # Log to console (optional, can be verbose)
             if status_code >= 500:
                 print(f"❌ Error: {status_code} | Pool: {current_pool} | URI: {log_entry.get('uri', '-')}")
