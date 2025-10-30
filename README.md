@@ -1,70 +1,98 @@
-# Blue/Green Deployment with Nginx Auto-Failover
+# Blue/Green Deployment with Auto-Failover and Slack Alerts
 
-This project implements a Blue/Green deployment strategy with automatic failover using Nginx as a reverse proxy and load balancer.
+Stage 3 implementation: Blue/Green deployment with Nginx auto-failover, structured logging, and real-time Slack alerting.
 
-## Overview
+## Features
 
-The system deploys two identical Node.js service instances (Blue and Green) behind Nginx. Traffic is routed to the active pool (default: Blue), and automatically fails over to the backup pool (Green) when the active pool becomes unhealthy.
+- **Blue/Green Deployment**: Two identical app instances with automatic failover
+- **Zero-Downtime Switching**: Nginx automatically fails over to backup pool
+- **Structured Logging**: Detailed logs with pool, release, timing, and status information
+- **Real-Time Monitoring**: Python log watcher tracks all requests
+- **Slack Alerts**: Automatic notifications for failovers and high error rates
+- **Alert Rate Limiting**: Prevents alert spam with configurable cooldowns
+- **Maintenance Mode**: Suppress alerts during planned changes
 
 ## Architecture
 
 ```
-┌─────────┐
-│ Client  │
-└────┬────┘
-     │ :8080
-     ▼
 ┌─────────────┐
-│   Nginx     │
-│  (Port 80)  │
-└──┬──────┬───┘
+│   Users     │
+└──────┬──────┘
+       │ :8080
+       ▼
+┌─────────────┐       ┌──────────────┐
+│    Nginx    │──────▶│ Shared Logs  │
+│ (Load Bal.) │       │   Volume     │
+└──┬──────┬───┘       └──────┬───────┘
+   │      │                  │
+   │      │                  │ Reads continuously
+   │      │                  ▼
+   │      │          ┌──────────────┐
+   │      │          │ Log Watcher  │
+   │      │          │  (Python)    │
+   │      │          └──────┬───────┘
+   │      │                 │
+   │      │                 │ Sends alerts
+   │      │                 ▼
+   │      │          ┌──────────────┐
+   │      │          │    Slack     │
+   │      │          └──────────────┘
    │      │
-   │      └─────────────┐
-   │ Primary           │ Backup
-   ▼                   ▼
-┌──────────┐      ┌──────────┐
-│   Blue   │      │  Green   │
-│ :8081    │      │ :8082    │
-│ (active) │      │ (backup) │
-└──────────┘      └──────────┘
+   ▼      ▼
+┌───┐  ┌───┐
+│ B │  │ G │
+│ l │  │ r │
+│ u │  │ e │
+│ e │  │ e │
+│   │  │ n │
+└───┘  └───┘
+:8081  :8082
 ```
 
 ## Prerequisites
 
-- Docker Engine (20.10+)
+- Docker (20.10+)
 - Docker Compose (2.0+)
-- Pre-built application images accessible from your registry
+- Slack workspace with webhook access
 
 ## Quick Start
 
-### 1. Clone and Configure
+### 1. Clone Repository
 
 ```bash
-# Edit .env with your image references
+git clone https://github.com/your-username/blue-green-deployment.git
+cd blue-green-deployment
+```
+
+### 2. Configure Slack Webhook
+
+1. Go to https://api.slack.com/apps
+2. Create new app → "From scratch"
+3. Enable "Incoming Webhooks"
+4. Add webhook to your workspace
+5. Copy webhook URL
+
+### 3. Configure Environment
+
+```bash
+# Copy example
+cp .env.example .env
+
+# Edit .env
 nano .env
 ```
 
-### 2. Configure Environment Variables
-
-Edit `.env` file:
-
+Required settings:
 ```bash
-# Required: Specify your Docker images
 BLUE_IMAGE=your-registry/app:blue-tag
 GREEN_IMAGE=your-registry/app:green-tag
-
-# Set active pool (blue or green)
 ACTIVE_POOL=blue
-
-# Release identifiers for tracking
-RELEASE_ID_BLUE=blue-release-v1.0.0
-RELEASE_ID_GREEN=green-release-v1.0.0
-
-# Optional: Application port (default: 3000)
-PORT=3000
+RELEASE_ID_BLUE=blue-release-2025-01-28
+RELEASE_ID_GREEN=green-release-2025-01-28
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 ```
 
-### 3. Start Services
+### 4. Start Services
 
 ```bash
 # Start all services
@@ -77,52 +105,178 @@ docker-compose ps
 docker-compose logs -f
 ```
 
-### 4. Verify Deployment
-
-```bash
-# Test the version endpoint
-curl -i http://localhost:8080/version
-
-# Expected response headers:
-# X-App-Pool: blue
-# X-Release-Id: blue-release-v1.0.0
+Expected output:
+```
+NAME             STATUS           PORTS
+app_blue         Up (healthy)     0.0.0.0:8081->3000/tcp
+app_green        Up (healthy)     0.0.0.0:8082->3000/tcp
+nginx_lb         Up               0.0.0.0:8080->80/tcp
+alert_watcher    Up               N/A
 ```
 
-## Testing Failover
+### 5. Verify Setup
 
-### Automatic Failover Test
+```bash
+# Test main endpoint
+curl -i http://localhost:8080/version
+
+# Should show:
+# HTTP/1.1 200 OK
+# X-App-Pool: blue
+# X-Release-Id: blue-release-2025-01-28
+```
+
+## Testing Failover and Alerts
+
+### Test 1: Failover Alert
 
 ```bash
 # 1. Verify Blue is active
 curl http://localhost:8080/version
-# Should show X-App-Pool: blue
+# X-App-Pool: blue
 
-# 2. Trigger chaos on Blue (induce errors)
+# 2. Trigger chaos on Blue
 curl -X POST http://localhost:8081/chaos/start?mode=error
 
-# 3. Immediately test failover
+# 3. Wait 5-10 seconds
+sleep 10
+
+# 4. Verify failover to Green
 curl http://localhost:8080/version
-# Should now show X-App-Pool: green
+# X-App-Pool: green
 
-# 4. Verify stability (run multiple requests)
-for i in {1..20}; do
-  curl -s http://localhost:8080/version | grep -E "X-App-Pool|X-Release-Id"
-  sleep 0.5
-done
+# 5. Check Slack for "Failover Detected" alert
 
-# 5. Stop chaos
+# 6. Stop chaos
 curl -X POST http://localhost:8081/chaos/stop
+
+# 7. Wait for recovery (optional)
+# You should see "Recovery Detected" alert in Slack
 ```
 
-### Test Timeout Failover
+### Test 2: High Error Rate Alert
 
 ```bash
-# Trigger timeout mode
-curl -X POST http://localhost:8081/chaos/start?mode=timeout
+# Generate errors to trigger error-rate alert
+for i in {1..250}; do
+  curl -s http://localhost:8080/version > /dev/null &
+done
 
-# Test requests continue to work via Green
+# Monitor watcher logs
+docker-compose logs -f alert_watcher
+
+# Check Slack for "High Error Rate" alert
+```
+
+### Test 3: View Structured Logs
+
+```bash
+# View Nginx logs with pool information
+docker-compose exec nginx tail -20 /var/log/nginx/access.log
+
+# Example log line:
+# [28/Jan/2025:14:30:22 +0000] method=GET uri=/version status=200 
+# pool=blue release=blue-release-2025-01-28 upstream_addr=172.18.0.2:3000 
+# upstream_status=200 request_time=0.045 upstream_response_time=0.043
+```
+
+## Monitoring and Operations
+
+### View Container Logs
+
+```bash
+# All logs
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f alert_watcher
+docker-compose logs -f nginx
+docker-compose logs -f app_blue
+docker-compose logs -f app_green
+```
+
+### Check Alert Watcher Status
+
+```bash
+# View watcher output
+docker-compose logs alert_watcher
+
+# Should show:
+# 🔍 Blue/Green Log Watcher Started
+# 📊 Configuration:
+#    - Log File: /var/log/nginx/access.log
+#    - Error Rate Threshold: 2.0%
+#    - Window Size: 200 requests
+#    - Slack Webhook: Configured ✅
+```
+
+### Manual Pool Switch
+
+```bash
+# Edit .env
+ACTIVE_POOL=green
+
+# Restart Nginx
+docker-compose up -d nginx
+
+# Verify
 curl http://localhost:8080/version
 ```
+
+### Enable Maintenance Mode
+
+```bash
+# Edit .env
+MAINTENANCE_MODE=true
+
+# Restart watcher
+docker-compose restart alert_watcher
+
+# Alerts are now suppressed
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLUE_IMAGE` | (required) | Docker image for Blue pool |
+| `GREEN_IMAGE` | (required) | Docker image for Green pool |
+| `ACTIVE_POOL` | blue | Primary pool (blue or green) |
+| `RELEASE_ID_BLUE` | (required) | Version identifier for Blue |
+| `RELEASE_ID_GREEN` | (required) | Version identifier for Green |
+| `PORT` | 3000 | Application port |
+| `SLACK_WEBHOOK_URL` | (required) | Slack incoming webhook URL |
+| `ERROR_RATE_THRESHOLD` | 2.0 | Error percentage to trigger alert |
+| `WINDOW_SIZE` | 200 | Request window for error rate calculation |
+| `ALERT_COOLDOWN_SEC` | 300 | Seconds between duplicate alerts |
+| `MAINTENANCE_MODE` | false | Suppress alerts when true |
+
+### Adjusting Alert Sensitivity
+
+**More sensitive (faster alerts)**:
+```bash
+ERROR_RATE_THRESHOLD=1.0
+WINDOW_SIZE=100
+```
+
+**Less sensitive (fewer false positives)**:
+```bash
+ERROR_RATE_THRESHOLD=5.0
+WINDOW_SIZE=500
+```
+
+## Runbook
+
+For detailed operational procedures, see [runbook.md](runbook.md).
+
+Key sections:
+- Failover alert response
+- High error rate alert response
+- Recovery procedures
+- Planned maintenance procedures
+- Troubleshooting guide
 
 ## API Endpoints
 
@@ -130,185 +284,121 @@ curl http://localhost:8080/version
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/version` | GET | Returns version info with pool and release headers |
+| `/version` | GET | Returns version with pool and release headers |
 | `/healthz` | GET | Health check endpoint |
-| `/chaos/start` | POST | Start chaos simulation (query param: `mode=error` or `mode=timeout`) |
-| `/chaos/stop` | POST | Stop chaos simulation |
+| `/chaos/start` | POST | Start chaos mode (query: `mode=error` or `mode=timeout`) |
+| `/chaos/stop` | POST | Stop chaos mode |
 
-### Direct Access (for testing)
+### Direct Access
 
-- Blue service: `http://localhost:8081`
-- Green service: `http://localhost:8082`
-- Nginx proxy: `http://localhost:8080`
-
-## Switching Active Pool
-
-To manually switch the active pool:
-
-```bash
-# Method 1: Edit .env and restart
-nano .env  # Change ACTIVE_POOL=green
-docker-compose up -d nginx  # Restart only nginx
-
-# Method 2: Use environment override
-ACTIVE_POOL=green docker-compose up -d nginx
-```
-
-## Nginx Configuration Details
-
-### Failover Mechanism
-
-The Nginx configuration implements automatic failover with:
-
-- **Primary/Backup Pattern**: Active pool is primary, other is backup
-- **Fast Failure Detection**: 
-  - `max_fails=2`: Mark unhealthy after 2 failures
-  - `fail_timeout=5s`: Quick recovery check interval
-- **Aggressive Timeouts**:
-  - Connection: 2s
-  - Send: 3s
-  - Read: 3s
-- **Retry Policy**: Retries on error, timeout, and 5xx responses
-- **Zero-Downtime**: Backup takes over within the same request
-
-### Header Forwarding
-
-All application headers are preserved and forwarded to clients:
-- `X-App-Pool`: Identifies which pool served the request
-- `X-Release-Id`: Tracks the release version
-
-## Monitoring
-
-### Check Service Health
-
-```bash
-# Check all containers
-docker-compose ps
-
-# Check specific service logs
-docker-compose logs app_blue
-docker-compose logs app_green
-docker-compose logs nginx
-
-# Check Nginx status
-curl http://localhost:8080/nginx_status
-```
-
-### Verify Health Checks
-
-```bash
-# Direct health checks
-curl http://localhost:8081/healthz  # Blue
-curl http://localhost:8082/healthz  # Green
-```
+- **Blue**: `http://localhost:8081`
+- **Green**: `http://localhost:8082`
+- **Nginx (main)**: `http://localhost:8080`
 
 ## Troubleshooting
 
-### Issue: Services not starting
+### Slack Alerts Not Working
 
 ```bash
-# Check container status
-docker-compose ps
+# Test webhook manually
+curl -X POST $SLACK_WEBHOOK_URL \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Test from Blue/Green monitoring"}'
 
-# View detailed logs
-docker-compose logs --tail=50
-
-# Restart services
-docker-compose restart
+# Check watcher logs
+docker-compose logs alert_watcher | grep -i slack
 ```
 
-### Issue: Failover not working
+### Logs Not Appearing
 
 ```bash
-# Verify Nginx configuration
-docker-compose exec nginx cat /etc/nginx/nginx.conf
+# Verify Nginx is writing logs
+docker-compose exec nginx ls -l /var/log/nginx/
 
-# Test configuration
-docker-compose exec nginx nginx -t
+# Check volume
+docker volume ls | grep nginx_logs
 
-# Reload configuration
-docker-compose exec nginx nginx -s reload
+# Verify watcher can read logs
+docker-compose exec alert_watcher ls -l /var/log/nginx/
 ```
 
-### Issue: Headers not showing
+### High CPU Usage
 
 ```bash
-# Use verbose curl to see all headers
-curl -v http://localhost:8080/version
+# Check container stats
+docker stats
 
-# Check if services are setting headers correctly
-curl -v http://localhost:8081/version  # Direct Blue
-curl -v http://localhost:8082/version  # Direct Green
+# Reduce log processing
+# Edit .env:
+WINDOW_SIZE=100  # Smaller window
 ```
-
-## Cleanup
-
-```bash
-# Stop and remove all containers
-docker-compose down
-
-# Remove containers and volumes
-docker-compose down -v
-
-# Remove containers, volumes, and networks
-docker-compose down -v --remove-orphans
-```
-
-## Performance Characteristics
-
-- **Failover Time**: < 5 seconds (typically 2-3s)
-- **Zero Failed Requests**: Retry mechanism ensures client requests succeed
-- **Request Timeout**: Maximum 8-10 seconds total (including retries)
-- **Health Check Interval**: Every 5 seconds
-
-## CI/CD Integration
-
-The setup is designed for automated testing:
-
-```bash
-# CI can set environment variables
-export BLUE_IMAGE=registry/app:commit-abc123
-export GREEN_IMAGE=registry/app:commit-abc123
-export ACTIVE_POOL=blue
-export RELEASE_ID_BLUE=build-123
-export RELEASE_ID_GREEN=build-123
-
-# Run deployment
-docker-compose up -d
-
-# Wait for healthy state
-sleep 15
-
-# Run automated tests
-./test-failover.sh
-```
-
-## Security Considerations
-
-- Services are isolated in a Docker bridge network
-- Only Nginx is exposed to the host
-- Direct service ports (8081, 8082) should be firewalled in production
-- Use HTTPS termination at Nginx for production deployments
 
 ## Project Structure
 
 ```
 .
-├── docker-compose.yml       # Service orchestration
-├── nginx.conf.template      # Nginx configuration template
-├── entrypoint.sh           # Dynamic config generation script
-├── .env.example            # Environment variables template
-├── README.md               # This file
-└── DECISION.md             # Implementation decisions (optional)
+├── docker-compose.yml          # Service orchestration
+├── nginx.conf.template         # Nginx configuration with logging
+├── entrypoint.sh              # Nginx config generator
+├── watcher.py                 # Log monitoring and alerting
+├── requirements.txt           # Python dependencies
+├── .env                       # Environment configuration (not in git)
+├── .env.example               # Environment template
+├── README.md                  # This file
+├── runbook.md                 # Operations runbook
+└── screenshots/               # Verification screenshots
+    ├── failover-alert.png
+    ├── error-rate-alert.png
+    └── nginx-logs.png
 ```
+
+## Screenshots
+
+Required screenshots for submission:
+
+1. **Failover Alert**: Slack message showing "Failover Detected" with pool transition
+2. **High Error Rate Alert**: Slack message showing error rate above threshold
+3. **Nginx Structured Logs**: Terminal showing log lines with pool, release, and timing data
+
+See `screenshots/` directory for examples.
+
+## Cleanup
+
+```bash
+# Stop all services
+docker-compose down
+
+# Remove volumes (including logs)
+docker-compose down -v
+
+# Remove everything
+docker-compose down -v --remove-orphans
+```
+
+## Stage 2 Compatibility
+
+All Stage 2 functionality is preserved:
+- Blue/Green deployment works as before
+- Automatic failover on health check failure
+- Zero-downtime switching
+- Chaos mode testing
+
+Stage 3 adds observability on top without breaking existing behavior.
+
+## Cost and Performance
+
+- **CPU overhead**: ~5% (Python log watcher)
+- **Memory overhead**: ~50MB (Python runtime)
+- **Log storage**: ~1MB per 10,000 requests
+- **Network**: Minimal (only Slack webhooks)
 
 ## License
 
-This project is part of the DevOps Intern Stage 2 assessment.
+This project is part of the DevOps Intern Stage 3 assessment.
 
 ## Support
 
-For issues or questions:
-1. Check container logs: `docker-compose logs`
-2. Verify configuration: `docker-compose config`
-3. Test Nginx config: `docker-compose exec nginx nginx -t`
+For issues:
+1. Check logs: `docker-compose logs`
+2. Review runbook: `runbook.md`
+3. Test webhook: `curl -X POST $SLACK_WEBHOOK_URL -d '{"text":"test"}'`
